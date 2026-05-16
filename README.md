@@ -1,5 +1,19 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Next Steps Agent
+
+This app generates a three-level actionable plan from a free-text situation using OpenAI, validates structure server-side, and saves each run locally under `data/plans/` (ignored by git—do not commit that folder).
+
+### Configure OpenAI
+
+Copy `.env.example` to `.env.local`, then set:
+
+- `OPENAI_API_KEY` — required (your real `sk-…` key, not a placeholder)
+- `OPENAI_MODEL` **or** `OPENAI_MODEL_ID` — optional (defaults to `gpt-4o-mini`)
+- `OPENAI_ORGANIZATION` **or** `OPENAI_ORG_ID` — optional, if your OpenAI account uses org routing
+
+Use `.env.local` for local secrets (Next.js loads it automatically). Never commit `.env.local` / `.env`.
+
 ## Getting Started
 
 First, run the development server:
