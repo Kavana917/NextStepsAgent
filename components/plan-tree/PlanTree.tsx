@@ -35,8 +35,7 @@ function Branch({
   expandMode: ExpandMode;
 }) {
   const children = step.children ?? [];
-  const defaultOpen =
-    expandMode === "all" ? true : expandMode === "none" ? false : depth === 1;
+  const defaultOpen = expandMode === "all";
 
   return (
     <Collapsible.Root defaultOpen={defaultOpen} className="group">

@@ -1,10 +1,8 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import {
-  PlanTree,
-  type ExpandMode,
-} from "@/components/plan-tree/PlanTree";
+import { PlanMindMap } from "@/components/plan-mindmap/PlanMindMap";
+import type { ExpandMode } from "@/components/plan-tree/PlanTree";
 import type { PlanStep } from "@/lib/plan-schema";
 import {
   GENERATE_CLIENT_TIMEOUT_MS,
@@ -361,12 +359,11 @@ export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
           <div className="space-y-3">
             <div className="flex flex-wrap items-baseline justify-between gap-3">
               <div>
-                <h2 className="text-sm font-semibold text-zinc-200">Plan tree</h2>
+                <h2 className="text-sm font-semibold text-zinc-200">Plan mind map</h2>
                 <p className="mt-1 max-w-xl text-xs leading-relaxed text-zinc-500">
-                  Level 1 = five major priorities (chevron). Level 2 = five substeps
-                  each (chevron). Level 3 = five execution tasks each (dot)—no further
-                  split. Expand rows to walk decomposition; complete leaves bottom-up
-                  to roll progress upward.
+                  Pan and zoom the canvas. You start with five top-level priorities
+                  only—click a node to expand or collapse. Violet = situation, gray
+                  = priorities, green = substeps, blue = execution tasks.
                 </p>
               </div>
               {activeId ? (
@@ -385,11 +382,15 @@ export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
                 </div>
               ) : null}
             </div>
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
-              <PlanTree
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-2 sm:p-3">
+              <PlanMindMap
                 steps={steps}
                 expandMode={expandMode}
                 treeKey={treeKey}
+                rootLabel={
+                  trimmed.length > 72 ? `${trimmed.slice(0, 69)}…` : trimmed || "Situation"
+                }
+                rootDescription={trimmed || "Describe your situation and generate a plan."}
               />
             </div>
           </div>
