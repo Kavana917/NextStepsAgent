@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "fs/promises";
 import path from "path";
 import type { PlanStep } from "@/lib/plan-schema";
 
@@ -19,6 +19,20 @@ export async function savePlan(record: SavedPlan): Promise<void> {
   await ensurePlansDir();
   const file = path.join(PLANS_DIR, `${record.id}.json`);
   await writeFile(file, JSON.stringify(record, null, 2), "utf8");
+}
+
+export async function deletePlan(id: string): Promise<boolean> {
+  await ensurePlansDir();
+  const safeId = path.basename(id);
+  if (safeId !== id) return false;
+  try {
+    await unlink(path.join(PLANS_DIR, `${safeId}.json`));
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return false;
+    throw err;
+  }
 }
 
 export async function getPlan(id: string): Promise<SavedPlan | null> {

@@ -1,40 +1,43 @@
 import OpenAI from "openai";
+import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import {
   assignPlanIds,
+  executionBatchSchema,
   llmPlanSchema,
+  STEPS_PER_BRANCH,
+  substepsForParentSchema,
+  topLevelOnlySchema,
+  type ExecutionBatch,
+  type LlmPlan,
   type PlanStep,
+  type SubstepsForParent,
+  type TopLevelOnly,
 } from "@/lib/plan-schema";
 
-const SYSTEM_PROMPT = `You are a planning assistant. Given the user's situation, produce a practical hierarchical plan.
+const N = String(STEPS_PER_BRANCH);
 
-Strict rules:
-- Output MUST be a single JSON object only (no markdown, no commentary).
-- Shape: { "steps": [ ... ] }
-- There are exactly THREE levels of work breakdown:
-  - Each item in "steps" is a major priority (level 1).
-  - Each level-1 step MUST have a "children" array of substeps (level 2).
-  - Each level-2 step MUST have a "children" array of concrete tasks (level 3 leaves).
-- Level-3 items are leaves: they MUST NOT include a "children" property.
-- Between 1 and 5 items at each branching level (inclusive): len(steps) 1–5, each children length 1–5.
-- Each step object MUST include:
-  - "title": short, actionable title
-  - "description": 1–3 sentences describing what to do
-  - "priority": one of "low" | "medium" | "high" | "critical"
-  - "estimatedMinutes": positive integer, rough effort estimate for that step alone (not rolled up)
-- Time estimates are indicative only (not commitments).
-- Use clear, concise language.`;
+const SHARED_FIELDS = `Each step object: "title", "description" (1–2 sentences), "priority" ("low"|"medium"|"high"|"critical"), "estimatedMinutes" (positive integer).`;
 
-function extractJsonObject(raw: string): string {
-  const t = raw.trim();
-  const fence = /^```(?:json)?\s*([\s\S]*?)```$/im.exec(t);
-  if (fence) return fence[1].trim();
-  return t;
-}
+async function mapPool<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
 
-function parseModelJson(content: string): unknown {
-  const cleaned = extractJsonObject(content);
-  return JSON.parse(cleaned) as unknown;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+  );
+  return results;
 }
 
 export type GeneratePlanResult =
@@ -62,78 +65,190 @@ export async function generatePlanFromSituation(params: {
   const openai = new OpenAI({
     apiKey,
     ...(organization ? { organization } : {}),
+    timeout: 120_000,
   });
 
-  const userParts = [
-    `Situation:\n${params.situation.trim()}`,
-    params.locale
-      ? `Preferred locale / language for wording: ${params.locale}`
-      : null,
-    `Return JSON with shape { "steps": [ ... ] } as specified.`,
-  ].filter(Boolean) as string[];
+  const situation = params.situation.trim();
+  const localeLine = params.locale
+    ? `Preferred locale / language: ${params.locale}`
+    : "";
 
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: userParts.join("\n\n") },
-  ];
-
-  const maxAttempts = 3;
-  let lastZodError: z.ZodError | null = null;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const completion = await openai.chat.completions.create({
+  try {
+    const tops = await callStructured<TopLevelOnly>({
+      openai,
       model,
-      temperature: attempt === 0 ? 0.35 : 0.15,
-      response_format: { type: "json_object" },
-      messages,
+      schema: topLevelOnlySchema,
+      schemaName: "top_level_steps",
+      messages: [
+        {
+          role: "system",
+          content: `You plan major priorities. ${SHARED_FIELDS} Return JSON with exactly ${N} top-level steps (broad phases only — no substeps yet).`,
+        },
+        {
+          role: "user",
+          content: `Situation:\n${situation}\n\n${localeLine}\n\nReturn { "steps": [ exactly ${N} objects ] }.`,
+        },
+      ],
     });
 
-    const content = completion.choices[0]?.message?.content;
-    if (!content) {
-      return { ok: false, error: "Model returned an empty response." };
+    const substepsByTop = await mapPool(
+      tops.steps,
+      STEPS_PER_BRANCH,
+      async (parent, index) => {
+        const batch = await callStructured<SubstepsForParent>({
+          openai,
+          model,
+          schema: substepsForParentSchema,
+          schemaName: "substeps_for_parent",
+          messages: [
+            {
+              role: "system",
+              content: `You break one major priority into exactly ${N} substeps. ${SHARED_FIELDS} Return JSON { "children": [ exactly ${N} objects ] } — no deeper nesting.`,
+            },
+            {
+              role: "user",
+              content: [
+                `Situation:\n${situation}`,
+                localeLine,
+                `Top-level priority ${index + 1} of ${N}: "${parent.title}"`,
+                parent.description,
+                `Return exactly ${N} substeps that complete this priority.`,
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            },
+          ],
+        });
+        return batch.children;
+      },
+    );
+
+    const executionByTop = await mapPool(
+      tops.steps,
+      STEPS_PER_BRANCH,
+      async (parent, topIndex) => {
+        const substeps = substepsByTop[topIndex];
+        const batch = await callStructured<ExecutionBatch>({
+          openai,
+          model,
+          schema: executionBatchSchema,
+          schemaName: "execution_batch",
+          messages: [
+            {
+              role: "system",
+              content: `For each substep, add exactly ${N} execution tasks (immediate actions). ${SHARED_FIELDS} Return { "substeps": [ exactly ${N} objects, each with "children": [ exactly ${N} execution tasks ] ] }. Execution tasks must NOT have "children".`,
+            },
+            {
+              role: "user",
+              content: [
+                `Situation:\n${situation}`,
+                localeLine,
+                `Top-level priority ${topIndex + 1}: "${parent.title}"`,
+                "Substeps to expand (in order):",
+                ...substeps.map(
+                  (s, j) =>
+                    `${j + 1}. ${s.title} — ${s.description}`,
+                ),
+                `For each substep, output exactly ${N} execution tasks in the matching "substeps[i].children" entry.`,
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            },
+          ],
+        });
+        return batch.substeps.map((s) => s.children);
+      },
+    );
+
+    const plan: LlmPlan = {
+      steps: tops.steps.map((top, i) => ({
+        ...top,
+        children: substepsByTop[i].map((sub, j) => ({
+          ...sub,
+          children: executionByTop[i][j],
+        })),
+      })),
+    };
+
+    const verified = llmPlanSchema.safeParse(plan);
+    if (!verified.success) {
+      return {
+        ok: false,
+        error: `Assembled plan failed validation: ${verified.error.issues
+          .slice(0, 6)
+          .map((issue) => issue.message)
+          .join("; ")}`,
+      };
     }
 
-    let parsed: unknown;
-    try {
-      parsed = parseModelJson(content);
-    } catch {
-      messages.push({ role: "assistant", content });
-      messages.push({
-        role: "user",
-        content:
-          "Your previous reply was not valid JSON. Reply again with ONLY a single JSON object matching the schema.",
-      });
-      continue;
+    return { ok: true, steps: assignPlanIds(verified.data) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Plan generation failed: ${msg}` };
+  }
+}
+
+async function callStructured<T>(params: {
+  openai: OpenAI;
+  model: string;
+  schema: z.ZodType<T>;
+  schemaName: string;
+  messages: OpenAI.Chat.ChatCompletionMessageParam[];
+}): Promise<T> {
+  const maxAttempts = 3;
+  let useStructured = true;
+  let lastError = "";
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (useStructured) {
+      try {
+        const completion = await params.openai.chat.completions.parse({
+          model: params.model,
+          temperature: attempt === 0 ? 0.2 : 0.08,
+          messages: params.messages,
+          response_format: zodResponseFormat(params.schema, params.schemaName),
+        });
+
+        const parsed = completion.choices[0]?.message?.parsed as T | null;
+        if (parsed) return parsed;
+
+        lastError = "Structured parse returned empty.";
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        useStructured = false;
+      }
+    } else {
+      try {
+        const completion = await params.openai.chat.completions.create({
+          model: params.model,
+          temperature: 0.12,
+          response_format: { type: "json_object" },
+          messages: params.messages,
+        });
+        const content = completion.choices[0]?.message?.content;
+        if (!content) {
+          lastError = "Empty model response.";
+        } else {
+          const json = JSON.parse(content) as unknown;
+          const checked = params.schema.safeParse(json);
+          if (checked.success) return checked.data;
+          lastError = checked.error.issues
+            .slice(0, 4)
+            .map((i) => i.message)
+            .join("; ");
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
     }
 
-    const checked = llmPlanSchema.safeParse(parsed);
-    if (checked.success) {
-      const steps = assignPlanIds(checked.data);
-      return { ok: true, steps };
-    }
-
-    lastZodError = checked.error;
-    messages.push({ role: "assistant", content });
-    messages.push({
+    params.messages.push({
       role: "user",
-      content: [
-        "Your JSON failed validation. Fix it and reply with ONLY the corrected JSON object.",
-        "Issues:",
-        ...checked.error.issues.map(
-          (i) => `- (${i.path.join(".") || "root"}) ${i.message}`,
-        ),
-      ].join("\n"),
+      content: `Invalid output (${lastError}). Reply with ONLY valid JSON matching the required shape and exact counts (${N} items per array).`,
     });
   }
 
-  const summary =
-    lastZodError?.issues
-      .slice(0, 8)
-      .map((i) => `${i.path.join(".") || "root"}: ${i.message}`)
-      .join("; ") ?? "Unknown validation error";
-
-  return {
-    ok: false,
-    error: `Could not produce a valid plan after retries. ${summary}`,
-  };
+  throw new Error(
+    `${params.schemaName} failed after ${maxAttempts} attempts: ${lastError}`,
+  );
 }

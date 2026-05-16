@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+/** Fixed fan-out at every branch (5 top-level × 5 substeps × 5 execution per substep). */
+export const STEPS_PER_BRANCH = 5;
+
 export const PRIORITIES = ["low", "medium", "high", "critical"] as const;
 export type Priority = (typeof PRIORITIES)[number];
 
@@ -10,29 +13,56 @@ const stepFields = {
   estimatedMinutes: z.number().int().positive().max(10_080),
 };
 
+/** Single step fields (no children) — used in staged generation. */
+export const stepFieldsSchema = z.object(stepFields);
+
 /** Level-3 leaf: no children. */
-export const leafStepSchema = z.object(stepFields);
+export const leafStepSchema = stepFieldsSchema;
 
 /** Level-2 node: children are leaves only. */
 export const level2StepSchema = z.object({
   ...stepFields,
-  children: z.array(leafStepSchema).min(1).max(5),
+  children: z.array(leafStepSchema).length(STEPS_PER_BRANCH),
 });
 
 /** Level-1 (top) node: children are level-2 nodes only. */
 export const level1StepSchema = z.object({
   ...stepFields,
-  children: z.array(level2StepSchema).min(1).max(5),
+  children: z.array(level2StepSchema).length(STEPS_PER_BRANCH),
 });
 
 /**
  * Raw shape expected from the model (no ids — we assign stable UUIDs server-side).
  */
 export const llmPlanSchema = z.object({
-  steps: z.array(level1StepSchema).min(1).max(5),
+  steps: z.array(level1StepSchema).length(STEPS_PER_BRANCH),
+});
+
+/** Phase 1 — five top-level priorities only. */
+export const topLevelOnlySchema = z.object({
+  steps: z.array(stepFieldsSchema).length(STEPS_PER_BRANCH),
+});
+
+/** Phase 2 — five substeps for one top-level parent. */
+export const substepsForParentSchema = z.object({
+  children: z.array(stepFieldsSchema).length(STEPS_PER_BRANCH),
+});
+
+/** Phase 3 — five execution tasks for each of five substeps under one top-level parent. */
+export const executionBatchSchema = z.object({
+  substeps: z
+    .array(
+      z.object({
+        children: z.array(stepFieldsSchema).length(STEPS_PER_BRANCH),
+      }),
+    )
+    .length(STEPS_PER_BRANCH),
 });
 
 export type LlmPlan = z.infer<typeof llmPlanSchema>;
+export type TopLevelOnly = z.infer<typeof topLevelOnlySchema>;
+export type SubstepsForParent = z.infer<typeof substepsForParentSchema>;
+export type ExecutionBatch = z.infer<typeof executionBatchSchema>;
 
 export type PlanStep = {
   id: string;

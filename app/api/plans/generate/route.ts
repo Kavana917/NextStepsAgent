@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+
+/** Allow staged OpenAI calls (11 requests) to finish on Vercel/local. */
+export const maxDuration = 300;
 import {
   GENERATE_RATE_LIMIT_MAX,
   GENERATE_RATE_LIMIT_WINDOW_MS,

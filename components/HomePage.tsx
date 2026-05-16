@@ -7,6 +7,7 @@ import {
 } from "@/components/plan-tree/PlanTree";
 import type { PlanStep } from "@/lib/plan-schema";
 import {
+  GENERATE_CLIENT_TIMEOUT_MS,
   MAX_SITUATION_LENGTH,
   MIN_SITUATION_LENGTH,
 } from "@/lib/constants";
@@ -28,6 +29,17 @@ function downloadTextFile(filename: string, content: string, mime: string) {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** Deterministic across Node SSR and browser (avoids `toLocaleString()` hydration mismatches). */
+function formatSavedAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())} UTC`;
 }
 
 export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
@@ -59,11 +71,17 @@ export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
   async function onGenerate() {
     setError(null);
     setLoading(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      GENERATE_CLIENT_TIMEOUT_MS,
+    );
     try {
       const res = await fetch("/api/plans/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ situation }),
+        signal: controller.signal,
       });
       const data: unknown = await res.json();
       const message =
@@ -94,10 +112,56 @@ export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
       setExpandMode("default");
       setTreeKey((k) => k + 1);
       await refreshHistory();
-    } catch {
-      setError("Network error.");
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        setError(
+          "Generation timed out. The full 5×5×5 plan can take 1–3 minutes—try again or use a faster model in .env.",
+        );
+      } else {
+        setError("Network error.");
+      }
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
+    }
+  }
+
+  async function onDeletePlan(id: string) {
+    const preview =
+      history.find((h) => h.id === id)?.situationPreview ?? "this plan";
+    if (
+      !window.confirm(
+        `Delete this saved plan?\n\n"${preview}"\n\nThis removes the file from data/plans/ on your machine.`,
+      )
+    ) {
+      return;
+    }
+
+    setError(null);
+    try {
+      const res = await fetch(`/api/plans/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const data: unknown = await res.json();
+        const message =
+          typeof data === "object" &&
+          data !== null &&
+          "error" in data &&
+          typeof (data as { error: unknown }).error === "string"
+            ? (data as { error: string }).error
+            : "Could not delete plan.";
+        setError(message);
+        return;
+      }
+
+      setHistory((prev) => prev.filter((item) => item.id !== id));
+      if (activeId === id) {
+        setActiveId(null);
+        setSteps([]);
+      }
+    } catch {
+      setError("Network error while deleting.");
     }
   }
 
@@ -167,9 +231,14 @@ export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
               Turn a messy situation into a three-level plan.
             </h1>
             <p className="max-w-2xl text-sm leading-relaxed text-zinc-400">
-              Describe what you’re facing. You’ll get up to five priorities, each
-              expanded into substeps and concrete tasks—shown as an interactive
-              tree. Estimates are rough guides.
+              Describe your situation. You get exactly five{" "}
+              <strong className="font-medium text-zinc-300">top-level priorities</strong>
+              —broad phases, not tiny chores. Each expands into five{" "}
+              <strong className="font-medium text-zinc-300">substeps</strong>{" "}
+              (concrete work toward that phase), and each substep into five{" "}
+              <strong className="font-medium text-zinc-300">execution steps</strong>
+              . Read top-down for clarity, bottom-up for progress. Every row shows
+              title, description, priority, and a rough time estimate.
             </p>
           </header>
 
@@ -216,6 +285,13 @@ export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
             >
               {loading ? "Generating…" : "Generate plan"}
             </button>
+            {loading ? (
+              <p className="w-full text-xs leading-relaxed text-zinc-400">
+                Building your plan in stages (5 priorities → 5 substeps each → 5
+                tasks each). This usually takes about 1–2 minutes; please keep this
+                tab open.
+              </p>
+            ) : null}
             <button
               type="button"
               onClick={() => applyExpandMode("all")}
@@ -283,12 +359,30 @@ export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
           ) : null}
 
           <div className="space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-zinc-200">Plan tree</h2>
+            <div className="flex flex-wrap items-baseline justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-200">Plan tree</h2>
+                <p className="mt-1 max-w-xl text-xs leading-relaxed text-zinc-500">
+                  Level 1 = five major priorities (chevron). Level 2 = five substeps
+                  each (chevron). Level 3 = five execution tasks each (dot)—no further
+                  split. Expand rows to walk decomposition; complete leaves bottom-up
+                  to roll progress upward.
+                </p>
+              </div>
               {activeId ? (
-                <span className="text-xs tabular-nums text-zinc-500">
-                  Saved id: {activeId}
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs tabular-nums text-zinc-500">
+                    Saved id: {activeId}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void onDeletePlan(activeId)}
+                    disabled={loading}
+                    className="rounded-md border border-rose-900/50 bg-rose-950/40 px-2 py-0.5 text-xs font-medium text-rose-200 hover:bg-rose-950/70 disabled:opacity-40"
+                  >
+                    Delete
+                  </button>
+                </div>
               ) : null}
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
@@ -315,24 +409,37 @@ export function HomePage({ initialHistory }: { initialHistory: ListItem[] }) {
               <p className="text-sm text-zinc-500">No saved plans yet.</p>
             ) : (
               history.map((item) => (
-                <button
+                <div
                   key={item.id}
-                  type="button"
-                  onClick={() => void loadPlan(item.id)}
-                  disabled={loading}
-                  className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition hover:bg-zinc-900 disabled:opacity-50 ${
+                  className={`flex gap-2 rounded-lg border p-2 ${
                     item.id === activeId
                       ? "border-sky-700 bg-sky-950/30"
                       : "border-zinc-800 bg-zinc-950/40"
                   }`}
                 >
+                  <button
+                    type="button"
+                    onClick={() => void loadPlan(item.id)}
+                    disabled={loading}
+                    className="min-w-0 flex-1 rounded-md px-1 py-1 text-left text-sm transition hover:bg-zinc-900/60 disabled:opacity-50"
+                  >
                   <div className="line-clamp-2 text-zinc-100">
                     {item.situationPreview}
                   </div>
                   <div className="mt-1 text-[11px] tabular-nums text-zinc-500">
-                    {new Date(item.createdAt).toLocaleString()}
+                    {formatSavedAt(item.createdAt)}
                   </div>
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onDeletePlan(item.id)}
+                    disabled={loading}
+                    aria-label={`Delete plan: ${item.situationPreview}`}
+                    className="shrink-0 self-center rounded-md border border-rose-900/50 bg-rose-950/40 px-2 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-950/70 disabled:opacity-40"
+                  >
+                    Delete
+                  </button>
+                </div>
               ))
             )}
           </div>

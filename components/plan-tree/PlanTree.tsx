@@ -41,7 +41,7 @@ function Branch({
   return (
     <Collapsible.Root defaultOpen={defaultOpen} className="group">
       <div className="flex gap-3 rounded-lg border border-zinc-800/80 bg-zinc-950/40 p-3 shadow-sm shadow-black/20">
-        <Collapsible.Trigger className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-800 bg-zinc-900/60 text-zinc-200 hover:bg-zinc-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500">
+        <Collapsible.Trigger className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-800 bg-zinc-900/60 text-zinc-200 outline-none hover:bg-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500">
           <ChevronRightIcon className="h-4 w-4 transition-transform duration-200 group-data-[state=open]:rotate-90" />
           <span className="sr-only">Toggle substeps</span>
         </Collapsible.Trigger>
