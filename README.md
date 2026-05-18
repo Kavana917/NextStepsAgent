@@ -1,50 +1,79 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Next Steps Agent
 
-## Next Steps Agent
+Turn a free-text **situation** into a **5×5×5** actionable plan (priorities → substeps → execution tasks) using OpenAI, with **Pydantic** validation on the server and a **React** mind-map UI.
 
-This app generates a three-level actionable plan from a free-text situation using OpenAI, validates structure server-side, and saves each run locally under `data/plans/` (ignored by git—do not commit that folder).
+## Stack
 
-### Configure OpenAI
+| Layer | Tech |
+|-------|------|
+| API | [FastAPI](https://fastapi.tiangolo.com/) + Pydantic v2 |
+| UI | Vite + React + Tailwind + React Flow |
+| Storage | Local JSON under `data/plans/` (gitignored) |
 
-Copy `.env.example` to `.env.local`, then set:
+## Configure OpenAI
 
-- `OPENAI_API_KEY` — required (your real `sk-…` key, not a placeholder)
-- `OPENAI_MODEL` **or** `OPENAI_MODEL_ID` — optional (defaults to `gpt-4o-mini`)
-- `OPENAI_ORGANIZATION` **or** `OPENAI_ORG_ID` — optional, if your OpenAI account uses org routing
+Copy `.env.example` to `.env` or `.env.local` at the **repo root**:
 
-Use `.env.local` for local secrets (Next.js loads it automatically). Never commit `.env.local` / `.env`.
-
-## Getting Started
-
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```env
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+# OPENAI_ORGANIZATION=org-...
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Never commit `.env` / `.env.local`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Development
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Use **two terminals**:
 
-## Learn More
+**Terminal 1 — API (port 8000):**
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+cd backend
+pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --port 8000
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+**Terminal 2 — UI (port 5173, proxies `/api` to backend):**
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-## Deploy on Vercel
+Open [http://localhost:5173](http://localhost:5173).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Plan generation runs **11 staged OpenAI calls** and often takes **1–3 minutes**.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Production (single server)
+
+```bash
+cd frontend && npm install && npm run build
+cd ../backend && pip install -r requirements.txt
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Open [http://localhost:8000](http://localhost:8000). FastAPI serves the built SPA from `frontend/dist/` and the API under `/api/plans/*`.
+
+Use a worker/ proxy timeout of **≥ 300s** for `POST /api/plans/generate`.
+
+## API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/plans` | List saved plans (metadata) |
+| `GET` | `/api/plans/{id}` | Load full plan |
+| `DELETE` | `/api/plans/{id}` | Delete plan file |
+| `POST` | `/api/plans/generate` | Body: `{ "situation": "...", "locale?": "..." }` |
+
+Prompts and Pydantic models live in [`backend/app/services/planning.py`](backend/app/services/planning.py) and [`backend/app/models/plan.py`](backend/app/models/plan.py).
+
+## Project layout
+
+```
+backend/     FastAPI + Pydantic + OpenAI
+frontend/    Vite React UI
+data/plans/  Saved plans (local, gitignored)
+context/     Project documentation
+```
