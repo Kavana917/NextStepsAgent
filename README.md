@@ -1,6 +1,6 @@
 # Next Steps Agent
 
-Turn a free-text **situation** into a **5×5×5** actionable plan (priorities → substeps → execution tasks) using OpenAI, with **Pydantic** validation on the server and a **React** mind-map UI.
+Turn a free-text **situation** into a **free-form plan tree** (actionable leaves) using OpenAI, with **Pydantic** validation on the server and a **canvas + inspector** UI at `/plan`.
 
 ## Stack
 
@@ -44,7 +44,7 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
-Plan generation runs **11 staged OpenAI calls** and often takes **1–3 minutes**.
+Plan generation uses **SSE streaming** (`/api/plans/generate/stream`); runtime depends on detail level (often several minutes for medium/high).
 
 ## Production (single server)
 
@@ -65,9 +65,22 @@ Use a worker/ proxy timeout of **≥ 300s** for `POST /api/plans/generate`.
 | `GET` | `/api/plans` | List saved plans (metadata) |
 | `GET` | `/api/plans/{id}` | Load full plan |
 | `DELETE` | `/api/plans/{id}` | Delete plan file |
-| `POST` | `/api/plans/generate` | Body: `{ "situation": "...", "locale?": "..." }` |
+| `POST` | `/api/plans/generate/stream` | Generate plan (SSE progress; UI default) |
+| `POST` | `/api/plans/generate` | Generate plan (non-streaming) |
 
 Prompts and Pydantic models live in [`backend/app/services/planning.py`](backend/app/services/planning.py) and [`backend/app/models/plan.py`](backend/app/models/plan.py).
+
+## Documentation
+
+Detailed docs are in [`context/`](context/):
+
+| Doc | Description |
+|-----|-------------|
+| [context/project_description.md](context/project_description.md) | Full architecture and how everything works |
+| [context/AGENTS.md](context/AGENTS.md) | Agent/coding conventions |
+| [context/development.md](context/development.md) | Setup and deployment |
+| [context/initial_plan_description.md](context/initial_plan_description.md) | Original product spec |
+| [context/custom_property.md](context/custom_property.md) | Planning properties |
 
 ## Project layout
 
@@ -75,5 +88,5 @@ Prompts and Pydantic models live in [`backend/app/services/planning.py`](backend
 backend/     FastAPI + Pydantic + OpenAI
 frontend/    Vite React UI
 data/plans/  Saved plans (local, gitignored)
-context/     Project documentation
+context/     Project documentation (see context/README.md)
 ```

@@ -1,36 +1,14 @@
 # Next Steps Agent — Initial Plan & Execution Summary
 
-This document describes the current system: a **FastAPI + Pydantic** backend and a **Vite + React** frontend that turn free-text situations into fixed **5×5×5** actionable plans.
+This document describes the system: a **FastAPI + Pydantic** backend and a **Vite + React** frontend that turn free-text situations into **free-form plan trees** with actionable leaf steps. The primary UI is the **planning canvas** at `/plan`.
 
 ---
 
 ## 1. Product goal
 
-**Next Steps Agent** accepts a user **situation** and produces a three-level plan with a strict shape:
+**Next Steps Agent** accepts a user **situation** and produces a **free-form plan tree** (typically 2–4 levels). Top-level **phases** branch into milestones; **leaves** are actionable tasks with `implementationGuide` and `acceptanceCriteria`. Each step has `title`, `description`, `priority` (`low` \| `medium` \| `high` \| `critical`), and `estimatedMinutes`.
 
-| Level | Name | Count | Role |
-|-------|------|-------|------|
-| 0 | Situation (mind-map root) | 1 | User input — context for all generation |
-| 1 | Top-level priorities | **5** | Broad phases, not tiny chores |
-| 2 | Substeps | **5 per priority** | Concrete work toward that phase |
-| 3 | Execution steps | **5 per substep** | Immediate, actionable tasks |
-
-**Total leaf tasks:** 5 × 5 × 5 = **125**. Each step has `title`, `description`, `priority` (`low` \| `medium` \| `high` \| `critical`), and `estimatedMinutes`.
-
-The UI explains this in `HomePage`:
-
-```228:239:frontend/src/components/HomePage.tsx
-            <h1 className="text-balance text-3xl font-semibold tracking-tight text-white">
-              Turn a situation into a three-level plan.
-            </h1>
-            <p className="max-w-2xl text-sm leading-relaxed text-zinc-400">
-              Describe your situation. You get exactly five{" "}
-              <strong className="font-medium text-zinc-300">top-level priorities</strong>
-              —broad phases, not tiny chores. Each expands into five{" "}
-              <strong className="font-medium text-zinc-300">substeps</strong>{" "}
-              (concrete work toward that phase), and each substep into five{" "}
-              <strong className="font-medium text-zinc-300">execution steps</strong>
-```
+The primary UI is the **planning canvas** at `/plan` (`PlanningWorkspace`): situation node, mind-map tree, and a right inspector (**+** on a step = branch context / regenerate; click a leaf = how-to implement).
 
 ---
 
@@ -175,7 +153,18 @@ class SavedPlan(BaseModel):
     situation: str
     created_at: str = Field(alias="createdAt")
     steps: list[PlanStep]
+    properties: list[PlanProperty] = Field(default_factory=list)
 ```
+
+### 5.5 Optional planning properties
+
+Users can enable **Planning context** under the situation field (`PlanPropertiesEditor`). Field name + value rows (presets or custom) are sent only when filled.
+
+- **API:** `POST /api/plans/generate` body may include `properties: PlanProperty[]` (max 12, unique names case-insensitive). Empty/disabled → `[]` — same prompts as situation-only.
+- **LLM:** `format_properties_block()` in `planning.py` injects a planning context block **before** the situation on all 11 calls; optional `enforce_time_budget()` after generation.
+- **Persistence:** Saved in `data/plans/{id}.json`; reload restores the editor. Old plans without `properties` deserialize as `[]`.
+
+**Full documentation:** [custom_property.md](./custom_property.md)
 
 Files: `data/plans/{id}.json`. `plan_store.py` uses `path.basename` on IDs to block path traversal.
 
@@ -219,33 +208,16 @@ Parallel work uses `ThreadPoolExecutor` (`_map_pool`, max 5 workers).
 
 ### 6.4 Where prompts live
 
-Prompts are **inline strings** in `planning.py` (not a separate prompts file):
+Prompts are **inline constants** in `planning.py`, assembled by `_system_content()` for every phase:
 
-- **Shared:** `SHARED_FIELDS` — field definitions for every step
-- **Phase 1 system:** “You plan major priorities…” + exactly 5 top-level steps
-- **Phase 2 system:** “You break one major priority into exactly 5 substeps…”
-- **Phase 3 system:** “For each substep, add exactly 5 execution tasks…”
-- **User messages:** include `situation`, optional `locale`, parent title/description, substep list for phase 3
+- **`SHARED_FIELDS`** — JSON field definitions for each step object
+- **`PLANNING_RULES`** — global quality rules (situation-specific, realistic priorities, clear language)
+- **`PHASE1_RULES`** — mutually exclusive outcome-oriented priorities in sensible order; no repeated themes
+- **`PHASE2_RULES`** — substeps scoped to parent only; each description ends with `Done when: ...`
+- **`PHASE3_RULES`** — one-sitting tasks (≤ `MAX_EXECUTION_TASK_MINUTES`, default 90), verb-first titles, no duplicates across substeps
+- **User messages** — situation, optional `locale` and **planning properties** block, parent context; phases 2–3 add short reinforcement lines
 
-Example phase 1:
-
-```148:161:backend/app/services/planning.py
-                {
-                    "role": "system",
-                    "content": (
-                        f"You plan major priorities. {SHARED_FIELDS} "
-                        f"Return JSON with exactly {N} top-level steps "
-                        "(broad phases only — no substeps yet)."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Situation:\n{situation}\n\n{locale_line}\n\n"
-                        f'Return {{ "steps": [ exactly {N} objects ] }}.'
-                    ),
-                },
-```
+System messages are built as: `role_intro` + `SHARED_FIELDS` + `PLANNING_RULES` + phase rules + JSON shape hint.
 
 ### 6.5 Limits and timeouts
 
@@ -258,6 +230,7 @@ From `backend/app/config.py`:
 | `GENERATE_RATE_LIMIT_MAX` | 12 per window |
 | `GENERATE_RATE_LIMIT_WINDOW_MS` | 60_000 |
 | `OPENAI_TIMEOUT_SEC` | 120 per request |
+| `MAX_EXECUTION_TASK_MINUTES` | 90 (leaf tasks; prompt guidance) |
 
 Client abort: `GENERATE_CLIENT_TIMEOUT_MS` = 180_000 in `frontend/src/lib/constants.ts`.
 
@@ -273,11 +246,11 @@ Client abort: `GENERATE_CLIENT_TIMEOUT_MS` = 180_000 in `frontend/src/lib/consta
 | `GET` | `/api/plans` | `list_plans()` | `{ plans: PlanListItem[] }` |
 | `GET` | `/api/plans/{id}` | `get_plan_by_id()` | Full `SavedPlan` or 404 |
 | `DELETE` | `/api/plans/{id}` | `delete_plan_by_id()` | `{ ok: true }` or 404 |
-| `POST` | `/api/plans/generate` | `generate_plan()` | Body: `{ situation, locale? }` → `{ id, steps }` |
+| `POST` | `/api/plans/generate` | `generate_plan()` | Body: `{ situation, properties?, locale? }` → `{ id, steps }` |
 
 Generate validation and errors:
 
-- **400** — situation too short/long
+- **400** — situation too short/long; duplicate property names; more than 12 properties
 - **429** — rate limit (`rate_limit.py`)
 - **502** — OpenAI / assembly failure
 - **503** — missing `OPENAI_API_KEY`
@@ -317,7 +290,7 @@ All fetches use relative URLs (`/api/plans`, etc.). Dev proxy:
 
 ### 8.3 HomePage behavior
 
-- **State:** `situation`, `steps`, `activeId`, `history`, `expandMode`, `treeKey`, `loading`, `error`
+- **State:** `situation`, `propertiesEnabled`, `propertyRows`, `savedProperties`, `steps`, `activeId`, `history`, `expandMode`, `treeKey`, `loading`, `error`
 - **On mount:** `useEffect` → `GET /api/plans` for sidebar history (replaces former Next.js SSR `listPlansMeta()`)
 - **Generate:** `POST /api/plans/generate` with `AbortController` (3 min timeout)
 - **Load plan:** `GET /api/plans/{id}` fills textarea + steps

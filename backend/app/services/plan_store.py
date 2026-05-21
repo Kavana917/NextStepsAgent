@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from app.config import PLANS_DIR
-from app.models.plan import PlanListItem, PlanStep, SavedPlan
+from app.models.plan import PlanListItem, SavedPlan, rollup_estimated_minutes
 
 
 def _ensure_plans_dir() -> None:
@@ -13,6 +13,9 @@ def _ensure_plans_dir() -> None:
 
 def save_plan(record: SavedPlan) -> None:
     _ensure_plans_dir()
+    record = record.model_copy(
+        update={"steps": rollup_estimated_minutes(record.steps)},
+    )
     path = PLANS_DIR / f"{record.id}.json"
     path.write_text(
         json.dumps(record.model_dump(by_alias=True), indent=2),
@@ -42,7 +45,10 @@ def get_plan(plan_id: str) -> SavedPlan | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return SavedPlan.model_validate(data)
+        plan = SavedPlan.model_validate(data)
+        return plan.model_copy(
+            update={"steps": rollup_estimated_minutes(plan.steps)},
+        )
     except (json.JSONDecodeError, ValueError):
         return None
 

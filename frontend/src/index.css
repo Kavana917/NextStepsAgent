@@ -23,3 +23,38 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* Straight tree edges; avoid heavy smooth-step curves on the planning canvas */
+.plan-canvas-flow .react-flow__edge-path {
+  stroke-linecap: round;
+}
+
+/* Dark scrollbars (Firefox) */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 #09090b;
+}
+
+/* Dark scrollbars (Chrome, Edge, Safari) */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #09090b;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 4px;
+  border: 2px solid #09090b;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+*::-webkit-scrollbar-corner {
+  background: #09090b;
+}

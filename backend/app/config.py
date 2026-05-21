@@ -11,8 +11,16 @@ MAX_SITUATION_LENGTH = 8_000
 MIN_SITUATION_LENGTH = 10
 GENERATE_RATE_LIMIT_WINDOW_MS = 60_000
 GENERATE_RATE_LIMIT_MAX = 12
-OPENAI_TIMEOUT_SEC = 120.0
-STEPS_PER_BRANCH = 5
+OPENAI_TIMEOUT_SEC = float(os.environ.get("OPENAI_TIMEOUT_SEC", "300"))
+
+MAX_EXECUTION_TASK_MINUTES = 90
+# Minimum actionable-leaf targets per detail tier (guidance only; no hard maximum).
+MIN_LEAVES_LOW = int(os.environ.get("MIN_LEAVES_LOW", "15"))
+MIN_LEAVES_MEDIUM = int(os.environ.get("MIN_LEAVES_MEDIUM", "40"))
+MIN_LEAVES_HIGH = int(os.environ.get("MIN_LEAVES_HIGH", "75"))
+LEAF_ENRICH_BATCH_SIZE = int(os.environ.get("LEAF_ENRICH_BATCH_SIZE", "20"))
+PARALLEL_EXPAND_WORKERS = int(os.environ.get("PARALLEL_EXPAND_WORKERS", "6"))
+PARALLEL_ENRICH_WORKERS = int(os.environ.get("PARALLEL_ENRICH_WORKERS", "4"))
 
 PLANS_DIR = Path(
     os.environ.get("PLANS_DIR", str(_REPO_ROOT / "data" / "plans")),

@@ -1,3 +1,2 @@
 export const MAX_SITUATION_LENGTH = 8_000;
 export const MIN_SITUATION_LENGTH = 10;
-export const GENERATE_CLIENT_TIMEOUT_MS = 180_000;

@@ -1,30 +1,34 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Background,
   Controls,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   type Node,
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { PlanStep } from "@/lib/plan-types";
+import type { PlanStep, SelectionTarget } from "@/lib/plan-types";
 import type { ExpandMode } from "@/components/plan-tree/PlanTree";
+import { AddButtonNode } from "@/components/plan-mindmap/AddButtonNode";
 import { PlanNode } from "@/components/plan-mindmap/PlanNode";
 import {
+  ADD_ROOT_ID,
   MAX_ZOOM,
   MIN_ZOOM,
+  ROOT_NODE_ID,
   WHEEL_ZOOM_SENSITIVITY,
 } from "@/components/plan-mindmap/constants";
 import {
   buildMindMapGraph,
   expandedIdsForMode,
+  type AddButtonNodeData,
   type PlanNodeData,
 } from "@/components/plan-mindmap/mindmap-layout";
 
-const nodeTypes = { planNode: PlanNode };
+const nodeTypes = { planNode: PlanNode, addButton: AddButtonNode };
 
-/** Faster, cursor-anchored scroll zoom (replaces default when panOnScroll is off). */
 function WheelZoomBoost() {
   const { getViewport, setViewport } = useReactFlow();
 
@@ -34,15 +38,16 @@ function WheelZoomBoost() {
 
     const onWheel = (raw: Event) => {
       const event = raw as WheelEvent;
-      if (event.target instanceof Element && event.target.closest(".react-flow__controls")) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".react-flow__controls")
+      ) {
         return;
       }
 
       const deltaModeFactor =
         event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 1;
       const delta = -event.deltaY * deltaModeFactor;
-
-      // Trackpad pinch-to-zoom (ctrl/meta + wheel): use a stronger pinch factor too
       const sensitivity = event.ctrlKey
         ? WHEEL_ZOOM_SENSITIVITY * 2.5
         : WHEEL_ZOOM_SENSITIVITY;
@@ -82,19 +87,8 @@ function FitViewOnChange({ dep }: { dep: string }) {
   const { fitView } = useReactFlow();
   useEffect(() => {
     const t = window.setTimeout(() => {
-      void fitView({ padding: 0.25, duration: 280 });
+      void fitView({ padding: 0.28, duration: 280 });
     }, 50);
-    return () => window.clearTimeout(t);
-  }, [dep, fitView]);
-  return null;
-}
-
-function FitViewAfterResize({ dep }: { dep: string }) {
-  const { fitView } = useReactFlow();
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      void fitView({ padding: 0.2, duration: 200 });
-    }, 120);
     return () => window.clearTimeout(t);
   }, [dep, fitView]);
   return null;
@@ -106,106 +100,160 @@ function PlanMindMapInner({
   treeKey,
   rootLabel,
   rootDescription,
+  showSituation,
+  showEmptyAdd,
+  selection,
+  onSelect,
+  extraExpandedIds = [],
 }: {
   steps: PlanStep[];
   expandMode: ExpandMode;
   treeKey: number;
   rootLabel: string;
   rootDescription: string;
+  showSituation: boolean;
+  showEmptyAdd: boolean;
+  selection: SelectionTarget;
+  onSelect: (target: SelectionTarget) => void;
+  extraExpandedIds?: string[];
 }) {
   const [expandedIds, setExpandedIds] = useState(() =>
     expandedIdsForMode(expandMode, steps),
   );
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const sync = () => {
-      setIsFullscreen(document.fullscreenElement === containerRef.current);
-    };
-    document.addEventListener("fullscreenchange", sync);
-    return () => document.removeEventListener("fullscreenchange", sync);
-  }, []);
+    setExpandedIds(expandedIdsForMode(expandMode, steps));
+  }, [expandMode, treeKey, steps]);
 
-  const toggleFullscreen = useCallback(async () => {
-    const el = containerRef.current;
-    if (!el) return;
-    try {
-      if (document.fullscreenElement === el) {
-        await document.exitFullscreen();
-      } else {
-        await el.requestFullscreen();
-      }
-    } catch {
-      // Browser blocked fullscreen (e.g. permission policy)
-    }
-  }, []);
+  useEffect(() => {
+    if (extraExpandedIds.length === 0) return;
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of extraExpandedIds) next.add(id);
+      return next;
+    });
+  }, [extraExpandedIds, treeKey]);
 
-  const { nodes, edges } = useMemo(
-    () =>
-      buildMindMapGraph({
-        rootLabel,
-        rootDescription,
-        steps,
-        expandedIds,
+  const { nodes, edges } = useMemo(() => {
+    const graph = buildMindMapGraph({
+      rootLabel,
+      rootDescription,
+      steps,
+      expandedIds,
+      showSituation,
+      showEmptyAdd,
+    });
+
+    const selectedId =
+      selection?.kind === "situation"
+        ? ROOT_NODE_ID
+        : selection?.kind === "add-root"
+          ? ADD_ROOT_ID
+          : selection?.kind === "step" ||
+              selection?.kind === "add-before" ||
+              selection?.kind === "expand-leaf"
+            ? selection.stepId
+            : null;
+
+    return {
+      nodes: graph.nodes.map((n) => {
+        if (n.type === "planNode") {
+          const data = n.data as PlanNodeData;
+          const stepId = data.stepId ?? n.id;
+          const contextActive =
+            (selection?.kind === "add-before" ||
+              selection?.kind === "expand-leaf") &&
+            selection.stepId === stepId;
+          const mode = data.addButtonMode ?? "context";
+          return {
+            ...n,
+            selected: selectedId === n.id,
+            sourcePosition: Position.Right,
+            targetPosition: Position.Left,
+            data: {
+              ...data,
+              contextActive,
+              addButtonMode: mode,
+              onAddButtonClick: data.showAddButton
+                ? () =>
+                    onSelect({
+                      kind: mode === "expand" ? "expand-leaf" : "add-before",
+                      stepId,
+                    })
+                : undefined,
+            },
+          };
+        }
+        return {
+          ...n,
+          selected: selectedId === n.id,
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
+        };
       }),
-    [rootLabel, rootDescription, steps, expandedIds],
-  );
+      edges: graph.edges,
+    };
+  }, [
+    rootLabel,
+    rootDescription,
+    steps,
+    expandedIds,
+    showSituation,
+    showEmptyAdd,
+    selection,
+    onSelect,
+  ]);
 
   const graphKey = `${treeKey}-${[...expandedIds].sort().join(",")}`;
 
-  const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    const data = node.data as PlanNodeData;
-    setSelectedId(node.id);
-    if (data.hasChildren) {
-      setExpandedIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(node.id)) next.delete(node.id);
-        else next.add(node.id);
-        return next;
-      });
-    }
-  }, []);
+  const onNodeClick = useCallback(
+    (_: React.MouseEvent, node: Node) => {
+      if (node.type === "addButton") {
+        const data = node.data as AddButtonNodeData;
+        if (data.isRootMenu) {
+          onSelect({ kind: "situation" });
+        }
+        return;
+      }
 
-  const selectedNode = nodes.find((n) => n.id === selectedId);
-  const selectedData = selectedNode?.data as PlanNodeData | undefined;
+      const data = node.data as PlanNodeData;
+      if (node.id === ROOT_NODE_ID) {
+        onSelect({ kind: "situation" });
+        if (data.hasChildren) {
+          setExpandedIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(node.id)) next.delete(node.id);
+            else next.add(node.id);
+            return next;
+          });
+        }
+        return;
+      }
 
-  if (steps.length === 0) {
-    return (
-      <p className="text-sm text-zinc-400">
-        Generate a plan to see your mind map here. Drag the canvas to pan, scroll
-        to zoom.
-      </p>
-    );
-  }
+      onSelect({ kind: "step", stepId: node.id });
+      if (data.hasChildren) {
+        setExpandedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(node.id)) next.delete(node.id);
+          else next.add(node.id);
+          return next;
+        });
+      }
+    },
+    [onSelect],
+  );
 
   return (
-    <div
-      ref={containerRef}
-      className={`relative w-full overflow-hidden bg-zinc-950 ${
-        isFullscreen
-          ? "fixed inset-0 z-50 h-dvh max-h-dvh border-0"
-          : "h-[min(72vh,760px)] rounded-lg border border-zinc-800"
-      }`}
-    >
-      <button
-        type="button"
-        onClick={() => void toggleFullscreen()}
-        className="absolute right-3 top-3 z-10 rounded-md border border-zinc-700 bg-zinc-900/95 px-2.5 py-1.5 text-xs font-medium text-zinc-200 shadow-lg hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
-        aria-label={isFullscreen ? "Exit full screen" : "Enter full screen"}
-      >
-        {isFullscreen ? "Exit full screen" : "Full screen"}
-      </button>
-
+    <div className="relative h-full w-full overflow-hidden bg-zinc-950">
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         onNodeClick={onNodeClick}
-        onPaneClick={() => setSelectedId(null)}
+        onPaneClick={() => onSelect(null)}
+        defaultEdgeOptions={{ type: "straight" }}
         fitView
-        fitViewOptions={{ padding: 0.25, minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM }}
+        fitViewOptions={{ padding: 0.28, minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM }}
         minZoom={MIN_ZOOM}
         maxZoom={MAX_ZOOM}
         nodesDraggable={false}
@@ -218,7 +266,7 @@ function PlanMindMapInner({
         zoomOnDoubleClick={false}
         preventScrolling
         proOptions={{ hideAttribution: true }}
-        className="bg-zinc-950"
+        className="bg-zinc-950 plan-canvas-flow"
       >
         <Background color="#3f3f46" gap={24} size={1} />
         <Controls
@@ -227,22 +275,11 @@ function PlanMindMapInner({
         />
         <WheelZoomBoost />
         <FitViewOnChange dep={graphKey} />
-        <FitViewAfterResize dep={isFullscreen ? `fs-${graphKey}` : "inline"} />
       </ReactFlow>
 
-      <div className="pointer-events-none absolute left-3 top-3 max-w-[calc(100%-8rem)] rounded-md border border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 text-[11px] text-zinc-400">
-        Drag to pan · Scroll to zoom · Pinch to zoom · Click nodes to expand
-        {isFullscreen ? " · Esc to exit" : ""}
+      <div className="pointer-events-none absolute left-3 top-3 max-w-md rounded-md border border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 text-[11px] text-zinc-400">
+        Drag to pan · Scroll to zoom · + on branches = context · + on large tasks = sub-steps
       </div>
-
-      {selectedData ? (
-        <div className="pointer-events-none absolute bottom-3 left-3 right-3 max-w-lg rounded-lg border border-zinc-700 bg-zinc-900/95 p-3 shadow-xl backdrop-blur-sm md:right-auto">
-          <p className="text-sm font-semibold text-zinc-50">{selectedData.title}</p>
-          <p className="mt-1.5 text-xs leading-relaxed text-zinc-300">
-            {selectedData.description}
-          </p>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -253,13 +290,14 @@ export function PlanMindMap(props: {
   treeKey: number;
   rootLabel: string;
   rootDescription: string;
+  showSituation: boolean;
+  showEmptyAdd: boolean;
+  selection: SelectionTarget;
+  onSelect: (target: SelectionTarget) => void;
 }) {
   return (
     <ReactFlowProvider>
-      <PlanMindMapInner
-        key={`${props.treeKey}-${props.expandMode}`}
-        {...props}
-      />
+      <PlanMindMapInner key={`${props.treeKey}-${props.expandMode}`} {...props} />
     </ReactFlowProvider>
   );
 }
